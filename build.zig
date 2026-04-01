@@ -32,6 +32,17 @@ const CommonSdl = struct {
     options: *std.Build.Step.Options,
 };
 
+const usr = "/Users/shehabellithy/Library/Android/sdk/ndk/27.0.12077973/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr";
+// TODO: this only works if producing an archive to link SDL later
+fn addAndroidLibC(mod: *std.Build.Module) void {
+    mod.addSystemIncludePath(.{ .cwd_relative = usr ++ "/include/aarch64-linux-android" });
+    mod.addSystemIncludePath(.{ .cwd_relative = usr ++ "/include" });
+}
+
+fn isAndroid(target: std.Build.ResolvedTarget) bool {
+    return target.result.abi == .android or target.result.abi == .androideabi;
+}
+
 pub fn linkSdl3(
     b: *std.Build,
     sdl_mod: *std.Build.Module,
@@ -50,7 +61,10 @@ pub fn linkSdl3(
             .target = target,
             .optimize = optimize,
         })) |sdl3| {
-            sdl_mod.linkLibrary(sdl3.artifact("SDL3"));
+            if (isAndroid(target)) {
+                sdl_mod.addIncludePath(sdl3.path("include"));
+                addAndroidLibC(sdl_mod);
+            } else sdl_mod.linkLibrary(sdl3.artifact("SDL3"));
         }
     }
     sdl_mod.addOptions("sdl_options", sdl3_options);
@@ -440,7 +454,11 @@ pub fn buildBackend(backend: Backend, test_dvui_and_app: bool, dvui_opts_in: Dvu
             _ = addExample("sdl3gpu-ontop", b.path("examples/sdl3gpu-ontop.zig"), true, example_opts, dvui_opts);
         },
         .sdl3 => {
-            dvui_opts.setDefaults(.{ .libc = true, .freetype = true, .tiny_file_dialogs = true, .stb_image = true, .tree_sitter = true });
+            if (isAndroid(target)) {
+                dvui_opts.setDefaults(.{ .libc = true, .freetype = false, .tiny_file_dialogs = false, .stb_image = true, .tree_sitter = false });
+            } else {
+                dvui_opts.setDefaults(.{ .libc = true, .freetype = true, .tiny_file_dialogs = true, .stb_image = true, .tree_sitter = true });
+            }
             const sdl_mod = b.addModule("sdl3", .{
                 .root_source_file = b.path("src/backends/sdl.zig"),
                 .target = target,
@@ -448,9 +466,10 @@ pub fn buildBackend(backend: Backend, test_dvui_and_app: bool, dvui_opts_in: Dvu
                 .link_libc = true,
             });
 
-            dvui_opts.addChecks(sdl_mod, "sdl3-backend");
-            dvui_opts.addTests(sdl_mod, "sdl3-backend");
-
+            if (!isAndroid(target)) {
+                dvui_opts.addChecks(sdl_mod, "sdl3-backend");
+                dvui_opts.addTests(sdl_mod, "sdl3-backend");
+            }
             const sdl3_options = b.addOptions();
             sdl3_options.addOption(
                 ?bool,
@@ -461,20 +480,24 @@ pub fn buildBackend(backend: Backend, test_dvui_and_app: bool, dvui_opts_in: Dvu
             linkSdl3(b, sdl_mod, sdl3_options, target, optimize);
 
             const dvui_sdl = addDvuiModule("dvui_sdl3", dvui_opts);
-            dvui_opts.addChecks(dvui_sdl, "dvui_sdl3");
-            if (test_dvui_and_app) {
-                dvui_opts.addTests(dvui_sdl, "dvui_sdl3");
+            if (!isAndroid(target)) {
+                dvui_opts.addChecks(dvui_sdl, "dvui_sdl3");
+                if (test_dvui_and_app) {
+                    dvui_opts.addTests(dvui_sdl, "dvui_sdl3");
+                }
             }
 
             linkBackend(dvui_sdl, sdl_mod);
-            const example_opts: ExampleOptions = .{
-                .dvui_mod = dvui_sdl,
-                .backend_name = "sdl-backend",
-                .backend_mod = sdl_mod,
-            };
-            _ = addExample("sdl3-standalone", b.path("examples/sdl-standalone.zig"), true, example_opts, dvui_opts);
-            _ = addExample("sdl3-ontop", b.path("examples/sdl-ontop.zig"), true, example_opts, dvui_opts);
-            _ = addExample("sdl3-app", b.path("examples/app.zig"), test_dvui_and_app, example_opts, dvui_opts);
+            if (!isAndroid(target)) {
+                const example_opts: ExampleOptions = .{
+                    .dvui_mod = dvui_sdl,
+                    .backend_name = "sdl-backend",
+                    .backend_mod = sdl_mod,
+                };
+                _ = addExample("sdl3-standalone", b.path("examples/sdl-standalone.zig"), true, example_opts, dvui_opts);
+                _ = addExample("sdl3-ontop", b.path("examples/sdl-ontop.zig"), true, example_opts, dvui_opts);
+                _ = addExample("sdl3-app", b.path("examples/app.zig"), test_dvui_and_app, example_opts, dvui_opts);
+            }
         },
         .raylib => {
             if (dvui_opts.vertex_index != .u16) {
@@ -967,6 +990,7 @@ pub fn addDvuiModule(
         .target = target,
         .optimize = optimize,
     });
+    if (isAndroid(target)) addAndroidLibC(dvui_mod);
     dvui_mod.addOptions("build_options", opts.build_options);
     dvui_mod.addOptions("default_options", opts.makeDefaults());
     dvui_mod.addImport("svg2tvg", b.dependency("svg2tvg", .{
